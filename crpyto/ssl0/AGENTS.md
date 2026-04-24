@@ -1,27 +1,30 @@
 # ssl0
 
-Minimalist SSL framework in C.
+Minimalist SSL/TLS framework in C. Implements the minimum required for HTTPS without external crypto libraries.
 
 ## Build & Test
 
-- No Makefile/build system; compilation via `gcc -I include` in shell scripts
-- Run all tests: `./test.sh` (runs `*_test.sh` scripts)
-- Run single test: `./<module>_test.sh` (e.g., `./ssl_test.sh`)
-- Each `*_test.sh` script compiles and runs its test from scratch
+- Build: `make` (uses Makefile with gcc -I include)
+- Run all tests: `make test` or `make clean && make test`
+- Build single test: `make test/<name>_test` (e.g., `make test/ssl_test`)
+- Run single test binary: `./test/ssl_test`
 
 ## Structure
 
 - Source: `src/`, Headers: `include/`, Tests: `test/`
-- `https/` contains an HTTP server (`httpd_ssl0`) using ssl0
 - Entry points: `src/ssl.c`, `src/ssl_socket.c`
 
 ## Running HTTPS Server
 
 ```bash
-./https_server.sh  # builds and runs on port 8443
+make https/httpd_ssl0
+./https/httpd_ssl0 8443
 ```
+
+Then visit `https://localhost:8443` (may need to accept self-signed cert).
 
 ## Notes
 
 - Tests in `test/` are git-tracked (not in `.gitignore`)
-- Some scripts output Chinese text
+- Dependencies: OpenSSL (for certificate generation), standard C library
+- Components: ssl, ssl_socket, crypto, aes, bignum, rsa, certificate, sha, sha1, rand

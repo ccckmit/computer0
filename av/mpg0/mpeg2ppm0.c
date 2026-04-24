@@ -1053,16 +1053,20 @@ static uint8_t* extract_video_es(const uint8_t *in, size_t in_size,
             int pkt_len = ((int)in[i]<<8) | in[i+1]; i += 2;
             if (pkt_len == 0 || i+pkt_len > in_size) break;
 
-            /* 跳過 PES header stuffing */
+            /* 跳過 MPEG-1 PES header (ISO 11172-1 §2.4.4.2)
+             *   stuffing (0xFF...) → STD buffer (opt 2B) → timestamp:
+             *     0x2x = PTS only  (5 bytes)
+             *     0x3x = PTS+DTS   (10 bytes)
+             *     0x0F = no ts     (1 byte)
+             */
             size_t j = 0;
-            while (j < (size_t)pkt_len && in[i+j]==0xFF) j++;
-            /* STD_buffer 或 PTS/DTS */
+            while (j < (size_t)pkt_len && in[i+j] == 0xFF) j++;
+            if (j < (size_t)pkt_len && (in[i+j] & 0xC0) == 0x40) j += 2;
             if (j < (size_t)pkt_len) {
                 uint8_t hdr = in[i+j];
-                if ((hdr & 0xC0) == 0x40) j += 2; /* STD buffer scale+size */
-                if ((hdr & 0xF0) == 0x20) j += 4; /* PTS only */
-                else if ((hdr & 0xF0) == 0x30) j += 9; /* PTS+DTS */
-                else if (hdr == 0x0F) j++;          /* no PTS/DTS */
+                if      ((hdr & 0xF0) == 0x20) j += 5;   /* PTS only  */
+                else if ((hdr & 0xF0) == 0x30) j += 10;  /* PTS + DTS */
+                else if ( hdr         == 0x0F) j += 1;   /* no ts     */
             }
 
             size_t payload = (size_t)pkt_len - j;
@@ -1276,9 +1280,6 @@ int main(int argc, char *argv[])
             /* slice data 從現在的 pos+bs.byte_pos 開始 */
             size_t slice_start = pos + bs.byte_pos;
 
-            int need_decode = (frame_no == target_frame) ||
-                              (frame_no < target_frame && pic_type == PIC_TYPE_I);
-
             /* 找這個 picture 的 payload 結束位置（下一個非 slice start code） */
             size_t next_pic_pos;
             {
@@ -1299,33 +1300,54 @@ int main(int argc, char *argv[])
                 }
             }
 
-            if (need_decode &&
-                (pic_type == PIC_TYPE_I || pic_type == PIC_TYPE_P)) {
+            const char *type_name = (pic_type==PIC_TYPE_I)?"I":
+                                    (pic_type==PIC_TYPE_P)?"P":
+                                    (pic_type==PIC_TYPE_B)?"B":"?";
 
+            if (pic_type == PIC_TYPE_I || pic_type == PIC_TYPE_P) {
+                /* I / P frame: 解碼並存為 ref */
                 memset(ctx.cur->y,  0x80,
                        (size_t)(ctx.frame_width * ctx.frame_height));
                 memset(ctx.cur->cb, 0x80,
                        (size_t)(ctx.frame_width/2 * ctx.frame_height/2));
                 memset(ctx.cur->cr, 0x80,
                        (size_t)(ctx.frame_width/2 * ctx.frame_height/2));
-
                 ctx.qscale = 8;
 
-                /* 初始化 BitStream 指向 slice 資料 */
                 bs_init(&bs, es + slice_start,
                              next_pic_pos - slice_start);
                 decode_picture(&bs, &ctx, pic_type);
 
+                /* P frame 解碼後更新 ref；I frame 也更新 ref */
+                frame_copy(ctx.ref, ctx.cur);
+
                 if (frame_no == target_frame) {
                     if (save_ppm(ctx.cur, ctx.width, ctx.height,
                                  output_file) == 0) {
-                        printf("✓ 已儲存第 %d 張影格 → %s\n",
-                               target_frame, output_file);
+                        printf("✓ 已儲存第 %d 張影格（%s）→ %s\n",
+                               target_frame, type_name, output_file);
                         found = 1;
                     }
-                } else {
-                    frame_copy(ctx.ref, ctx.cur);
                 }
+            } else if (pic_type == PIC_TYPE_B) {
+                /* B frame: 無法完整解碼（需雙向 MC），
+                 * 若這是目標 frame，輸出最近一個 I/P ref frame */
+                if (frame_no == target_frame) {
+                    if (ctx.ref->y == NULL ||
+                        ctx.ref->width == 0) {
+                        fprintf(stderr,
+                            "✗ 第 %d 張是 B-frame 且沒有可用的參考影格\n",
+                            target_frame);
+                    } else {
+                        if (save_ppm(ctx.ref, ctx.width, ctx.height,
+                                     output_file) == 0) {
+                            printf("✓ 已儲存第 %d 張影格（B→輸出前一個 I/P）→ %s\n",
+                                   target_frame, output_file);
+                            found = 1;
+                        }
+                    }
+                }
+                /* B frame 不更新 ref */
             }
 
             /* 下一輪從這個 picture 結束後繼續 */
