@@ -1,13 +1,13 @@
 /*
- * img0.c  —  BMP <-> JPEG converter & info tool, pure C, zero external dependencies
+ * jpg0.c  —  PPM <-> JPEG converter & info tool, pure C, zero external dependencies
  *
- * Compile:  gcc -O2 -o img0 img0.c -lm
+ * Compile:  gcc -O2 -o jpg0 jpg0.c -lm
  *
  * Usage:
- *   1. Info BMP:   ./img0 test.bmp
- *   2. Info JPG:   ./img0 test.jpg
- *   3. BMP->JPG:   ./img0 test.bmp -o test.jpg [quality 1-100]
- *   4. JPG->BMP:   ./img0 test.jpg -o test.bmp
+ *   1. Info PPM:   ./jpg0 test.ppm
+ *   2. Info JPG:   ./jpg0 test.jpg
+ *   3. PPM->JPG:   ./jpg0 test.ppm -o test.jpg [quality 1-100]
+ *   4. JPG->PPM:   ./jpg0 test.jpg -o test.ppm
  */
 
 #include <stdio.h>
@@ -31,30 +31,64 @@ static int endswith(const char *str, const char *suffix) {
     return 1;
 }
 
-/* ── BMP headers (packed) ── */
-#pragma pack(push, 1)
-typedef struct {
-    uint16_t bfType;
-    uint32_t bfSize;
-    uint16_t bfReserved1, bfReserved2;
-    uint32_t bfOffBits;
-} BmpFileHdr;
-
-typedef struct {
-    uint32_t biSize;
-    int32_t  biWidth, biHeight;
-    uint16_t biPlanes, biBitCount;
-    uint32_t biCompression, biSizeImage;
-    int32_t  biXPelsPerMeter, biYPelsPerMeter;
-    uint32_t biClrUsed, biClrImportant;
-} BmpInfoHdr;
-#pragma pack(pop)
-
 typedef struct { int w, h; uint8_t *rgb; } Image;
 
-/* ════════════════════════════════════════════════════════
- *  Standard JPEG Tables (IJG) & Constants
- * ════════════════════════════════════════════════════════ */
+static void show_ppm_info(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { perror(path); return; }
+    char magic[3];
+    if (fscanf(fp, "%2s", magic) != 1 || (strcmp(magic, "P3") != 0 && strcmp(magic, "P6") != 0)) {
+        printf("Not a valid PPM file.\n");
+        fclose(fp);
+        return;
+    }
+    int w, h, maxval;
+    fscanf(fp, "%d %d %d", &w, &h, &maxval);
+    printf("File      : %s\n", path);
+    printf("Format    : PPM (%s)\n", magic[1] == '3' ? "ASCII" : "Binary");
+    printf("Size      : %d x %d\n", w, h);
+    printf("Max value : %d\n", maxval);
+    fclose(fp);
+}
+
+static Image *load_ppm(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    char magic[3];
+    if (fscanf(fp, "%2s", magic) != 1) { fclose(fp); return NULL; }
+    int w, h, maxval;
+    if (fscanf(fp, "%d %d %d", &w, &h, &maxval) != 3) { fclose(fp); return NULL; }
+    
+    Image *img = (Image*)malloc(sizeof *img);
+    img->w = w; img->h = h;
+    img->rgb = (uint8_t*)malloc((size_t)w * h * 3);
+    
+    if (strcmp(magic, "P6") == 0) {
+        fgetc(fp);
+        fread(img->rgb, 1, (size_t)w * h * 3, fp);
+    } else {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int r, g, b;
+                fscanf(fp, "%d %d %d", &r, &g, &b);
+                img->rgb[(y * w + x) * 3 + 0] = (uint8_t)r;
+                img->rgb[(y * w + x) * 3 + 1] = (uint8_t)g;
+                img->rgb[(y * w + x) * 3 + 2] = (uint8_t)b;
+            }
+        }
+    }
+    fclose(fp);
+    return img;
+}
+
+static int save_ppm(const Image *img, const char *path) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    fprintf(fp, "P6\n%d %d\n255\n", img->w, img->h);
+    fwrite(img->rgb, 1, (size_t)img->w * img->h * 3, fp);
+    fclose(fp);
+    return 0;
+}
 
 static const uint8_t DC_LUM_BITS[17] = {0,0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0};
 static const uint8_t DC_LUM_VALS[12] = {0,1,2,3,4,5,6,7,8,9,10,11};
@@ -131,84 +165,6 @@ static void build_huff(HuffTab *ht, const uint8_t *bits, const uint8_t *vals, in
     }
 }
 static int count_vals(const uint8_t *bits) { int n=0; for(int i=1;i<=16;i++) n+=bits[i]; return n; }
-
-/* ════════════════════════════════════════════════════════
- *  BMP Reader & Writer & Info
- * ════════════════════════════════════════════════════════ */
-
-static void show_bmp_info(const char *path) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) { perror(path); return; }
-    BmpFileHdr fh; BmpInfoHdr ih;
-    if (fread(&fh, sizeof(fh), 1, fp)==1 && fread(&ih, sizeof(ih), 1, fp)==1 && fh.bfType==0x4D42) {
-        printf("File      : %s\n", path);
-        printf("Format    : BMP\n");
-        printf("Size      : %d x %d\n", ih.biWidth, abs(ih.biHeight));
-        printf("Bit depth : %d-bit\n", ih.biBitCount);
-        printf("Compress  : %s\n", ih.biCompression == 0 ? "None" : "Compressed");
-    } else {
-        printf("Not a valid BMP file.\n");
-    }
-    fclose(fp);
-}
-
-static Image *load_bmp(const char *path) {
-    FILE *fp = fopen(path,"rb");
-    if (!fp) return NULL;
-    BmpFileHdr fh; BmpInfoHdr ih;
-    if (fread(&fh,sizeof fh,1,fp)!=1 || fread(&ih,sizeof ih,1,fp)!=1 || fh.bfType!=0x4D42) {
-        fclose(fp); return NULL;
-    }
-    int w = ih.biWidth, h = abs(ih.biHeight);
-    int flip = (ih.biHeight > 0), bpp = ih.biBitCount/8, row = (w*bpp+3)&~3;
-
-    Image *img = (Image*)malloc(sizeof *img);
-    img->w = w; img->h = h;
-    img->rgb = (uint8_t*)malloc((size_t)w*h*3);
-    uint8_t *rowbuf = (uint8_t*)malloc(row);
-
-    fseek(fp,(long)fh.bfOffBits,SEEK_SET);
-    for (int y=0; y<h; y++) {
-        fread(rowbuf,1,row,fp);
-        uint8_t *dst = img->rgb + (flip ? (h-1-y) : y)*w*3;
-        for (int x=0; x<w; x++) {
-            dst[x*3+0] = rowbuf[x*bpp+2]; /* R */
-            dst[x*3+1] = rowbuf[x*bpp+1]; /* G */
-            dst[x*3+2] = rowbuf[x*bpp+0]; /* B */
-        }
-    }
-    free(rowbuf); fclose(fp);
-    return img;
-}
-
-static int save_bmp(const Image *img, const char *path) {
-    FILE *fp = fopen(path, "wb");
-    if(!fp) return -1;
-    int w = img->w, h = img->h, row_stride = (w * 3 + 3) & ~3;
-    BmpFileHdr fh; memset(&fh, 0, sizeof fh);
-    BmpInfoHdr ih; memset(&ih, 0, sizeof ih);
-
-    fh.bfType = 0x4D42;
-    fh.bfOffBits = sizeof(BmpFileHdr) + sizeof(BmpInfoHdr);
-    fh.bfSize = fh.bfOffBits + row_stride * h;
-    ih.biSize = sizeof(BmpInfoHdr);
-    ih.biWidth = w; ih.biHeight = -h; // Top-down
-    ih.biPlanes = 1; ih.biBitCount = 24; ih.biSizeImage = row_stride * h;
-
-    fwrite(&fh, sizeof fh, 1, fp); fwrite(&ih, sizeof ih, 1, fp);
-    uint8_t pad[3] = {0};
-    for(int y=0; y<h; y++) {
-        uint8_t *row = img->rgb + y * w * 3;
-        for(int x=0; x<w; x++) {
-            fputc(row[x*3+2], fp); // B
-            fputc(row[x*3+1], fp); // G
-            fputc(row[x*3+0], fp); // R
-        }
-        if(row_stride > w * 3) fwrite(pad, 1, row_stride - w * 3, fp);
-    }
-    fclose(fp);
-    return 0;
-}
 
 /* ════════════════════════════════════════════════════════
  *  JPEG Decoder & Info
@@ -567,34 +523,34 @@ static int save_jpeg(const Image *img, const char *path, int quality) {
 
 int main(int argc, char *argv[]) {
     if (argc == 2) {
-        if (endswith(argv[1], ".bmp")) show_bmp_info(argv[1]);
+        if (endswith(argv[1], ".ppm")) show_ppm_info(argv[1]);
         else if (endswith(argv[1], ".jpg") || endswith(argv[1], ".jpeg")) show_jpeg_info(argv[1]);
         else printf("Unsupported format for info.\n");
         return 0;
     } else if (argc >= 4 && strcmp(argv[2], "-o") == 0) {
-        if (endswith(argv[1], ".bmp") && (endswith(argv[3], ".jpg") || endswith(argv[3], ".jpeg"))) {
-            Image *img = load_bmp(argv[1]);
-            if (!img) { printf("Failed to load BMP.\n"); return 1; }
+        if (endswith(argv[1], ".ppm") && (endswith(argv[3], ".jpg") || endswith(argv[3], ".jpeg"))) {
+            Image *img = load_ppm(argv[1]);
+            if (!img) { printf("Failed to load PPM.\n"); return 1; }
             int q = (argc >= 5) ? atoi(argv[4]) : 75;
             if (save_jpeg(img, argv[3], q) == 0) printf("Converted: %s -> %s (Q=%d)\n", argv[1], argv[3], q);
             else printf("Error writing JPEG.\n");
             free(img->rgb); free(img);
-        } else if ((endswith(argv[1], ".jpg") || endswith(argv[1], ".jpeg")) && endswith(argv[3], ".bmp")) {
+        } else if ((endswith(argv[1], ".jpg") || endswith(argv[1], ".jpeg")) && endswith(argv[3], ".ppm")) {
             Image *img = load_jpeg(argv[1]);
             if (!img) { printf("Failed to decode JPEG.\n"); return 1; }
-            if (save_bmp(img, argv[3]) == 0) printf("Converted: %s -> %s\n", argv[1], argv[3]);
-            else printf("Error writing BMP.\n");
+            if (save_ppm(img, argv[3]) == 0) printf("Converted: %s -> %s\n", argv[1], argv[3]);
+            else printf("Error writing PPM.\n");
             free(img->rgb); free(img);
         } else {
-            printf("Unsupported conversion path. Only BMP<->JPG is supported.\n");
+            printf("Unsupported conversion path. Only PPM<->JPG is supported.\n");
         }
         return 0;
     }
 
     printf("Usage:\n");
-    printf("  Show BMP info   : %s  test.bmp\n", argv[0]);
+    printf("  Show PPM info   : %s  test.ppm\n", argv[0]);
     printf("  Show JPG info   : %s  test.jpg\n", argv[0]);
-    printf("  Convert BMP->JPG: %s  test.bmp -o test.jpg [quality]\n", argv[0]);
-    printf("  Convert JPG->BMP: %s  test.jpg -o test.bmp\n", argv[0]);
+    printf("  Convert PPM->JPG: %s  test.ppm -o test.jpg [quality]\n", argv[0]);
+    printf("  Convert JPG->PPM: %s  test.jpg -o test.ppm\n", argv[0]);
     return 1;
 }
