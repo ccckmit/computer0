@@ -41,7 +41,7 @@ __pycache__
 *.app
 *.i*86
 *.x86_64
-*.hex
+# *.hex
 
 # Debug files
 *.dSYM/
@@ -68,7 +68,7 @@ dkms.conf
 *.pt
 files/
 results/
-data/
+# data/
 
 
 # Byte-compiled / optimized / DLL files
