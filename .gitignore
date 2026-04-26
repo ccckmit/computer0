@@ -1,6 +1,7 @@
 
 bak/
 node_modules/
+*.gz
 
 __pycache__
 
@@ -68,7 +69,7 @@ dkms.conf
 *.pt
 files/
 results/
-# data/
+data/
 
 
 # Byte-compiled / optimized / DLL files
